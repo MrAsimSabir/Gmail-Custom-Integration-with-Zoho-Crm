@@ -1,0 +1,223 @@
+function sendEmailToCRM() {
+  // Search for any unread email in your entire inbox
+  var threads = GmailApp.search("is:unread"); 
+  
+  for (var i = 0; i < threads.length; i++) {
+    var messages = threads[i].getMessages();
+    
+    for (var j = 0; j < messages.length; j++) {
+      var message = messages[j];
+      
+      if (message.isUnread()) {
+        
+        // Extract raw sender string (e.g., "John Doe <john@example.com>")
+        var rawFrom = message.getFrom();
+        
+        // Extract JUST the clean email address
+        var emailMatch = rawFrom.match(/<([^>]+)>/);
+        var cleanSenderAddress = emailMatch ? emailMatch[1] : rawFrom;
+
+        // Fetch whole email structure (Headers + Body) capped strictly at 1,900 characters
+        var rawDataJson = parseRawToJsonClean(message);
+
+        // 1. Parse the body text into key-value pairs exactly as they appear
+        var parsedBodyMap = parseBodyToMap(message.getPlainBody());
+        
+        // 2. Generate the normalized map with standardized keys
+        var normalizedBodyMap = normalizeParsedMap(parsedBodyMap);
+        
+        // Construct a completely clean, flat JSON payload directly
+        var flatPayloadData = {
+          "email_sender": rawFrom,               // Full string (e.g., "John Doe <john@example.com>")
+          "sender_address": cleanSenderAddress,   // Clean email address only (e.g., "john@example.com")
+          "email_subject": message.getSubject(),
+          "email_date": message.getDate().toISOString(),
+          "raw_data": rawDataJson                // Cleaned whole email object capped at 1,900 characters
+        };
+        
+        // Merge the original parsed email body fields first
+        for (var key in parsedBodyMap) {
+          if (parsedBodyMap.hasOwnProperty(key)) {
+            flatPayloadData[key] = parsedBodyMap[key];
+          }
+        }
+        
+        // Merge the standardized normalized fields (will overwrite or add standard keys)
+        for (var normKey in normalizedBodyMap) {
+          if (normalizedBodyMap.hasOwnProperty(normKey)) {
+            flatPayloadData[normKey] = normalizedBodyMap[normKey];
+          }
+        }
+        
+        // Options for the HTTP POST request (sending clean raw JSON)
+        var options = {
+          "method": "post",
+          "contentType": "application/json",
+          "payload": JSON.stringify(flatPayloadData), 
+          "muteHttpExceptions": true
+        };
+        
+        // Your Zoho CRM webhook URL
+        var crmWebhookUrl = "";        
+        
+        try {
+          var response = UrlFetchApp.fetch(crmWebhookUrl, options);
+          Logger.log("CRM Response: " + response.getContentText());
+          
+          if (response.getResponseCode() == 200) {
+            message.markRead(); 
+          }
+        } catch (e) {
+          Logger.log("Error sending to CRM: " + e.toString());
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Captures the entire email structure (Headers + Full Plain Body) capped strictly at 1,900 characters.
+ */
+function parseRawToJsonClean(message) {
+  // 1. Structure the essential email headers
+  var headerSummary = [
+    "From: " + message.getFrom(),
+    "To: " + message.getTo(),
+    "Cc: " + (message.getCc() || "None"),
+    "Subject: " + message.getSubject(),
+    "Date: " + message.getDate().toISOString(),
+    "Message-ID: " + message.getId()
+  ].join("\n");
+
+  // 2. Extract full body content
+  var plainBody = message.getPlainBody() || "";
+  
+  // 3. Combine headers + body into a unified email text block
+  var fullEmailContent = headerSummary + "\n\n--- EMAIL BODY ---\n\n" + plainBody;
+
+  // 4. Sanitize spacing and cap strictly at 1,900 characters
+  var trimmedContent = sanitizeAndLimitChars(fullEmailContent, 1900);
+
+  return {
+    "full_raw_email": trimmedContent
+  };
+}
+
+/**
+ * Normalizes line breaks, removes excess spacing, and caps string strictly by character count.
+ */
+function sanitizeAndLimitChars(text, maxChars) {
+  if (!text) return "";
+
+  // Normalize line breaks and remove duplicate blank lines/tabs
+  var clean = text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Character check
+  if (clean.length <= maxChars) {
+    return clean;
+  }
+
+  // Strictly truncate to maxChars characters
+  return clean.substring(0, maxChars) + "\n\n[...Truncated at 1,900 characters...]";
+}
+
+/**
+ * Helper function to parse plain text email body line-by-line into a JSON map.
+ */
+function parseBodyToMap(bodyText) {
+  var map = {};
+  if (!bodyText) return map;
+
+  var lines = bodyText.split(/\r?\n/);
+  var unmappedCounter = 1;
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    
+    if (line === "") continue;
+
+    var colonIndex = line.indexOf(":");
+    
+    if (colonIndex > -1) {
+      var key = line.substring(0, colonIndex).trim();
+      var value = line.substring(colonIndex + 1).trim();
+      
+      if (key !== "") {
+        map[key] = value;
+      } else {
+        map["line_" + unmappedCounter] = line;
+        unmappedCounter++;
+      }
+    } else {
+      map["line_" + unmappedCounter] = line;
+      unmappedCounter++;
+    }
+  }
+  
+  return map;
+}
+
+/**
+ * Normalization function to map varied user inputs to standardized CRM keys.
+ * Case-insensitive, space-insensitive, and dash-insensitive.
+ */
+function normalizeParsedMap(rawMap) {
+  var normalizedMap = {};
+  
+  // Define variations mapping to Standardized Keys (including typos and variants)
+  var rules = {
+    "Name": ["name"],
+    "Email": ["email"],
+    "Phone": ["phone"],
+    "Submission ID": ["submission id"],
+    "Form Name": ["form name"],
+    "Page": ["page"],
+    "Page URL": ["page url"],
+    "UTM Source": ["utm source"],
+    "UTM Medium": ["utm medium"],
+    "UTM Campaign": ["utm campaign"],
+    "UTM Content": ["utm content"],
+    "UTM Term": ["utm term"],
+    "FB Campaign ID": ["fb campaign id"],
+    "FB Adset ID": ["fb adset id"],
+    "FB Ad ID": ["fb ad id"],
+    "Placement": ["placement"],
+    "FB Client ID": ["fb client id"],
+    "Referrer": ["referrer"],
+    "First Touch Source": ["first touch source"],
+    "Lead Source": ["lead source"]
+};
+
+  // Helper utility to clean variations for strict matching
+  function cleanString(str) {
+    return str.toString().toLowerCase().replace(/[\s\-_]/g, "");
+  }
+
+  // Loop through each raw incoming key from the email
+  for (var rawKey in rawMap) {
+    if (!rawMap.hasOwnProperty(rawKey)) continue;
+    
+    var cleanedRawKey = cleanString(rawKey);
+    var matched = false;
+
+    // Check against standard rules
+    for (var standardKey in rules) {
+      var variations = rules[standardKey];
+      
+      for (var k = 0; k < variations.length; k++) {
+        if (cleanedRawKey === cleanString(variations[k])) {
+          normalizedMap[standardKey] = rawMap[rawKey];
+          matched = true;
+          break;
+        }
+      }
+      if (matched) break;
+    }
+  }
+
+  return normalizedMap;
+}

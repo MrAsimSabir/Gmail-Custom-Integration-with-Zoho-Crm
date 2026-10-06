@@ -1,0 +1,47 @@
+string data(String crmAPIRequest)
+{
+    // 1. Convert incoming JSON string to top-level Map
+    topMap = crmAPIRequest.toMap();
+    
+    // 2. Extract the actual payload from 'body'
+    payloadMap = Map();
+    if(topMap.containsKey("body") && topMap.get("body") != null)
+    {
+        bodyObj = topMap.get("body");
+        if(bodyObj.toMap().size() > 0)
+        {
+            payloadMap = bodyObj.toMap();
+        }
+        else
+        {
+            payloadMap = bodyObj.toString().toMap();
+        }
+    }
+    else
+    {
+        payloadMap = topMap;
+    }
+
+    info "================ EXTRACTED VALUES ================";
+
+    // 3. Loop through every key dynamically and log as Extracted Key : Value
+    for each key in payloadMap.keys()
+    {
+        val = payloadMap.get(key);
+        
+        if(val != null && val.toString().trim() != "")
+        {
+            cleanValue = val.toString().trim();
+            info "Extracted " + key + ": " + cleanValue;
+        }
+    }
+
+    info "==================================================";
+
+    // 4. Return clean JSON response string
+    responseMap = Map();
+    responseMap.put("status", "success");
+    responseMap.put("total_fields_extracted", payloadMap.keys().size());
+
+    return responseMap.toString();
+}
